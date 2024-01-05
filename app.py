@@ -1,42 +1,43 @@
-from Crypto.Cipher import AES
-from Crypto.Random import get_random_bytes
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 import base64
+import os
+
+from model import EncryptRequest, DecryptRequest    
 
 app = FastAPI()
 
-KEY = get_random_bytes(16)
+def generate_key_iv():
+    return os.urandom(32), os.urandom(16)
 
-def pad(s):
-    return s + (16 - len(s) % 16) * chr(16 - len(s) % 16)
+key, iv = generate_key_iv()
+backend = default_backend()
+cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=backend)
 
-def unpad(s):
-    return s[:-ord(s[len(s) - 1:])]
+def validate_token(token: str) -> bool:
+    return token == "secret"
 
-def encrypt(plain_text):
-    plain_text = pad(plain_text)
-    cipher = AES.new(KEY, AES.MODE_CBC)
-    ct_bytes = cipher.encrypt(plain_text.encode('utf-8'))
-    iv = base64.b64encode(cipher.iv).decode('utf-8')
-    ct = base64.b64encode(ct_bytes).decode('utf-8')
-    return iv, ct
+def encrypt(plain_text: str) -> str:
+    encryptor = cipher.encryptor()
+    encrypted_data = encryptor.update(plain_text.encode()) + encryptor.finalize()
+    return base64.b64encode(encrypted_data).decode()
 
-def decrypt(iv, cipher_text):
-    iv = base64.b64decode(iv)
-    cipher_text = base64.b64decode(cipher_text)
-    cipher = AES.new(KEY, AES.MODE_CBC, iv)
-    pt = unpad(cipher.decrypt(cipher_text).decode('utf-8'))
-    return pt
+def decrypt(encrypted_data: bytes) -> str:
+    decryptor = cipher.decryptor()
+    decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    return decrypted_data.decode()
 
 @app.post("/encrypt/")
-async def encrypt_data(plain_text: str):
-    iv, ct = encrypt(plain_text)
-    return {"iv": iv, "cipher_text": ct}
+async def encrypt_data(request: EncryptRequest = Body(...)):
+    if not validate_token(request.token):
+        raise HTTPException(status_code=403, detail="Invalid token")
+    encrypted_data = encrypt(request.plain_text)
+    return {"encrypted_data": encrypted_data}
 
 @app.post("/decrypt/")
-async def decrypt_data(iv: str, cipher_text: str):
-    try:
-        pt = decrypt(iv, cipher_text)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"plain_text": pt}
+async def decrypt_data(request: DecryptRequest = Body(...)):
+    if not validate_token(request.token):
+        raise HTTPException(status_code=403, detail="Invalid token")
+    decrypted_data = decrypt(base64.b64decode(request.encrypted_data))
+    return {"plain_text": decrypted_data}
